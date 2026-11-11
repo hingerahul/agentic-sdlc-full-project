@@ -26,6 +26,35 @@ public class RunOrchestrationService {
                 .map(dependency -> new DependencyEdge(dependency, stage.id(), ExecutionGate.EXIT))).toList();
     }
 
+    public List<ExecutionGate> executionGates() {
+        List<ExecutionGate> gates = new ArrayList<>();
+        for (StageDefinition stage : DEFAULT_GRAPH) {
+            String entry = stage.dependencies().isEmpty()
+                    ? "Requirement intake is present and structurally valid."
+                    : "All dependencies must pass their exit gates: " + String.join(", ", stage.dependencies()) + ".";
+            gates.add(new ExecutionGate(stage.id(), ExecutionGate.ENTRY, entry));
+            gates.add(new ExecutionGate(stage.id(), ExecutionGate.EXIT,
+                    "Stage output is recorded and its declared checks pass."));
+        }
+        return List.copyOf(gates);
+    }
+
+    public List<List<String>> executionWaves() {
+        Map<String, Integer> levels = new LinkedHashMap<>();
+        for (StageDefinition stage : DEFAULT_GRAPH) {
+            int level = stage.dependencies().stream().mapToInt(dependency -> levels.get(dependency) + 1).max().orElse(0);
+            levels.put(stage.id(), level);
+        }
+        int maxLevel = levels.values().stream().mapToInt(Integer::intValue).max().orElse(-1);
+        List<List<String>> waves = new ArrayList<>();
+        for (int level = 0; level <= maxLevel; level++) {
+            int currentLevel = level;
+            waves.add(levels.entrySet().stream().filter(entry -> entry.getValue() == currentLevel)
+                    .map(Map.Entry::getKey).toList());
+        }
+        return List.copyOf(waves);
+    }
+
     public List<String> validationIssues() {
         List<String> issues = new ArrayList<>();
         Map<String, StageDefinition> index = new HashMap<>();
@@ -34,6 +63,10 @@ public class RunOrchestrationService {
         }
         for (StageDefinition stage : DEFAULT_GRAPH) for (String dependency : stage.dependencies()) {
             if (!index.containsKey(dependency)) issues.add("Stage '" + stage.id() + "' depends on missing stage '" + dependency + "'.");
+        }
+        for (StageDefinition stage : DEFAULT_GRAPH) {
+            if (stage.riskLevel() == RiskLevel.HIGH && !stage.requiresHumanApproval())
+                issues.add("High-risk stage '" + stage.id() + "' must require human approval.");
         }
         if (hasCycle()) issues.add("Orchestration graph contains a cycle and cannot execute safely.");
         return List.copyOf(issues);
@@ -60,18 +93,19 @@ public class RunOrchestrationService {
     public String buildPlanSummary() {
         List<String> lines = new ArrayList<>();
         lines.add("## SDLC dependency graph");
-        lines.add("Testing and documentation are independent branches after implementation and synchronize at release readiness.");
+        lines.add("Each stage has entry and exit gates. Stages in a wave are parallel-ready; testing and documentation synchronize at release readiness.");
         for (StageDefinition stage : DEFAULT_GRAPH) {
             lines.add("- " + stage.id() + " (" + stage.riskLevel() + ") dependencies=" + stage.dependencies()
                     + (stage.requiresHumanApproval() ? "; human approval required" : ""));
         }
-        lines.add("Graph is executed in dependency order by this bounded runtime; work is not concurrently dispatched.");
+        lines.add("Execution waves: " + executionWaves());
+        lines.add("Independent local planning stages execute concurrently; no external agents or jobs are dispatched.");
         return String.join("\n", lines);
     }
 
     public RuntimeMetrics metricsFor(int completed, int total, int retries, int rollbacks,
-                                     int approvals, int failures, long latencyMs) {
+                                     int approvals, int failures, long endToEndLatencyMs) {
         double rate = total == 0 ? 0.0 : completed * 100.0 / total;
-        return new RuntimeMetrics(total, completed, retries, rollbacks, approvals, failures, rate, latencyMs);
+        return new RuntimeMetrics(total, completed, retries, rollbacks, approvals, failures, rate, endToEndLatencyMs, 0, 0);
     }
 }

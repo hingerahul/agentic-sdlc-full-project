@@ -1,0 +1,4 @@
+com/hingera/agenticsdlc/security/ApiSecurityTest.class
+com/hingera/agenticsdlc/run/JdbcRunRepositoryTest.class
+com/hingera/agenticsdlc/orchestration/RunOrchestrationServiceTest.class
+com/hingera/agenticsdlc/run/RunServiceTest.class

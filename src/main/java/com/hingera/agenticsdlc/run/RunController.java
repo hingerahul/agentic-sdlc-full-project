@@ -27,4 +27,5 @@ public class RunController {
     @GetMapping("/{id}/events") public List<RunAuditEvent> auditTrail(@PathVariable UUID id) { return runService.auditTrail(id); }
     @PostMapping("/{id}/execute") public EngineeringRun execute(@PathVariable UUID id) { return runService.execute(id); }
     @PostMapping("/{id}/review") public EngineeringRun review(@PathVariable UUID id, @Valid @RequestBody ReviewRequest request) { return runService.review(id, request); }
+    @PostMapping("/{id}/replan") public EngineeringRun replan(@PathVariable UUID id, @Valid @RequestBody CreateRunRequest request) { return runService.replan(id, request); }
 }
