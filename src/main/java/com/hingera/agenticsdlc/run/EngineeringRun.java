@@ -14,7 +14,8 @@ public record EngineeringRun(
         String outcome,
         ValidationResult validation,
         ReviewDecision reviewDecision,
-        String reviewFeedback
+        String reviewFeedback,
+        RequirementAssessment assessment
 ) {
     public EngineeringRun {
         workItems = List.copyOf(workItems);

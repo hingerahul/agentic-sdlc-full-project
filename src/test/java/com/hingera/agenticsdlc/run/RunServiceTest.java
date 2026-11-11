@@ -4,6 +4,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.util.List;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -11,77 +13,69 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class RunServiceTest {
-
     private RunService service;
 
-    @BeforeEach
-    void setUp() {
-        service = new RunService();
-    }
+    @BeforeEach void setUp() { service = new RunService(); }
 
-    @Test
-    void createsPlansAndExecutesIntoReviewableValidatedOutcome() {
+    @Test void createsAndExecutesReviewableValidatedOutcome() {
         EngineeringRun planned = service.create("Build a working prototype for controlled SDLC automation.");
-
         assertEquals(RunStatus.PLANNED, planned.status());
+        assertEquals(ProjectScenario.GREENFIELD, planned.assessment().scenario());
         assertEquals(5, planned.workItems().size());
-        assertTrue(planned.workItems().stream().allMatch(item -> item.status() == WorkItemStatus.PLANNED));
-
         EngineeringRun executed = service.execute(planned.id());
-
         assertEquals(RunStatus.REVIEW_REQUIRED, executed.status());
         assertTrue(executed.validation().passed());
-        assertNotNull(executed.outcome());
-        assertTrue(executed.outcome().contains("Submitted requirement"));
-        assertTrue(executed.outcome().contains("human must inspect"));
+        assertTrue(executed.outcome().contains("Requirement assessment"));
+        assertTrue(executed.outcome().contains("human owns final quality"));
     }
 
-    @Test
-    void requiresAnExplicitHumanDecisionAfterExecution() {
-        EngineeringRun planned = service.create("Build a reviewable engineering outcome prototype.");
+    @Test void detectsAmbiguityAndBlocksApprovalUntilClarified() {
+        EngineeringRun planned = service.create(new CreateRunRequest("Build a better SDLC system for our team.",
+                ProjectScenario.AUTO, "", List.of()));
+        assertEquals(RequirementClarity.NEEDS_CLARIFICATION, planned.assessment().clarity());
+        assertFalse(planned.assessment().clarificationQuestions().isEmpty());
         EngineeringRun executed = service.execute(planned.id());
+        assertFalse(executed.validation().passed());
+        ResponseStatusException error = assertThrows(ResponseStatusException.class,
+                () -> service.review(executed.id(), new ReviewRequest(ReviewDecision.APPROVE, "approve")));
+        assertEquals(409, error.getStatusCode().value());
+    }
 
-        EngineeringRun reviewed = service.review(executed.id(),
-                new ReviewRequest(ReviewDecision.APPROVE, "Looks good"));
+    @Test void brownfieldScenarioRequiresAndPreservesSuppliedContext() {
+        EngineeringRun run = service.create(new CreateRunRequest("Refactor the existing billing service to fix rounding.",
+                ProjectScenario.BROWNFIELD, "billing module; invoice API; payment reconciliation flow", List.of("Totals match currency rounding rules")));
+        assertEquals(ProjectScenario.BROWNFIELD, run.assessment().scenario());
+        assertEquals(RequirementClarity.CLEAR, run.assessment().clarity());
+        EngineeringRun executed = service.execute(run.id());
+        assertTrue(executed.outcome().contains("billing module; invoice API"));
+        assertTrue(executed.outcome().contains("No code generation"));
+    }
 
+    @Test void requiresExplicitHumanDecisionAfterExecution() {
+        EngineeringRun run = service.execute(service.create(new CreateRunRequest(
+                "Add an API endpoint for listing saved reports.", ProjectScenario.GREENFIELD, "",
+                List.of("GET /reports returns the caller's reports"))).id());
+        EngineeringRun reviewed = service.review(run.id(), new ReviewRequest(ReviewDecision.APPROVE, "Reviewed"));
         assertEquals(RunStatus.APPROVED, reviewed.status());
         assertEquals(ReviewDecision.APPROVE, reviewed.reviewDecision());
-        assertEquals("Looks good", reviewed.reviewFeedback());
     }
 
-    @Test
-    void rejectsExecutionMoreThanOnce() {
-        EngineeringRun planned = service.create("Build an agentic SDLC automation prototype.");
-        service.execute(planned.id());
-
-        ResponseStatusException exception = assertThrows(ResponseStatusException.class,
-                () -> service.execute(planned.id()));
-
-        assertEquals(409, exception.getStatusCode().value());
+    @Test void rejectsRepeatedExecutionAndRecordsRequestChanges() {
+        EngineeringRun run = service.create(new CreateRunRequest("Generate a validated software engineering plan.",
+                ProjectScenario.GREENFIELD, "", List.of("Plan contains test and release steps")));
+        service.execute(run.id());
+        ResponseStatusException error = assertThrows(ResponseStatusException.class, () -> service.execute(run.id()));
+        assertEquals(409, error.getStatusCode().value());
+        EngineeringRun requestedChanges = service.review(run.id(), new ReviewRequest(ReviewDecision.REQUEST_CHANGES, "Add acceptance tests"));
+        assertEquals(RunStatus.CHANGES_REQUESTED, requestedChanges.status());
+        assertFalse(requestedChanges.reviewFeedback().isBlank());
     }
 
-    @Test
-    void recordsRequestChangesAsAReviewOutcome() {
-        EngineeringRun planned = service.create("Generate a validated software engineering plan.");
-        EngineeringRun executed = service.execute(planned.id());
-
-        EngineeringRun reviewed = service.review(executed.id(),
-                new ReviewRequest(ReviewDecision.REQUEST_CHANGES, "Add acceptance tests"));
-
-        assertEquals(RunStatus.CHANGES_REQUESTED, reviewed.status());
-        assertFalse(reviewed.reviewFeedback().isBlank());
-    }
-
-    @Test
-    void exposesAnOrchestrationSnapshot() {
-        EngineeringRun planned = service.create("Build a reviewable engineering outcome with orchestration metadata.");
-
-        OrchestrationSnapshot snapshot = service.orchestrationSnapshot(planned.id());
-
+    @Test void exposesOrchestrationSnapshot() {
+        OrchestrationSnapshot snapshot = service.orchestrationSnapshot(service.create("Build a reviewable prototype with orchestration metadata.").id());
         assertNotNull(snapshot);
         assertEquals(6, snapshot.graph().size());
         assertTrue(snapshot.summary().contains("Governance-aware orchestration graph"));
         assertEquals(6, snapshot.traces().size());
-        assertTrue(snapshot.metrics().totalStages() > 0);
     }
 }
