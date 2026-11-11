@@ -5,6 +5,7 @@ import com.hingera.agenticsdlc.orchestration.OrchestrationStatus;
 import com.hingera.agenticsdlc.orchestration.RunOrchestrationService;
 import com.hingera.agenticsdlc.orchestration.RuntimeMetrics;
 import com.hingera.agenticsdlc.orchestration.StageDefinition;
+import com.hingera.agenticsdlc.orchestration.StageExecutionState;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
@@ -38,7 +39,11 @@ public class RunService {
     private final ConcurrentMap<UUID, EngineeringRun> runs = new ConcurrentHashMap<>();
 
     public EngineeringRun create(String rawRequirement) {
-        String requirement = rawRequirement.trim();
+        String requirement = rawRequirement == null ? "" : rawRequirement.trim();
+        if (requirement.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Requirement cannot be blank");
+        }
+
         Instant now = Instant.now();
         List<WorkItem> workItems = PLAN.stream()
                 .map(item -> new WorkItem(PLAN.indexOf(item) + 1, item.kind(), item.title(),
@@ -68,24 +73,25 @@ public class RunService {
         EngineeringRun run = findById(id);
         List<StageDefinition> graph = orchestrationService.defaultGraph();
         List<ExecutionTrace> traces = new ArrayList<>();
+        List<StageExecutionState> stageStates = new ArrayList<>();
         int completedStages = 0;
 
         for (StageDefinition stage : graph) {
-            boolean isCompleted = run.status() != RunStatus.PLANNED &&
-                    (run.status() == RunStatus.APPROVED || run.status() == RunStatus.CHANGES_REQUESTED ||
-                            run.status() == RunStatus.REVIEW_REQUIRED ||
-                            stage.dependencies().isEmpty() || run.workItems().stream().anyMatch(item -> item.status() == WorkItemStatus.COMPLETED));
-            if (isCompleted) {
+            StageExecutionState state = stageStateFor(run, stage);
+            stageStates.add(state);
+            if ("COMPLETED".equals(state.status())) {
                 completedStages++;
             }
             traces.add(new ExecutionTrace(
                     stage.id(),
-                    isCompleted ? "COMPLETED" : (stage.requiresHumanApproval() ? "WAITING_APPROVAL" : "PLANNED"),
-                    stage.description(),
-                    stage.dependencies().isEmpty() ? List.of("Requirement captured and normalized") : stage.dependencies().stream()
+                    state.status(),
+                    state.message(),
+                    stage.dependencies().isEmpty()
+                            ? List.of("Requirement captured and normalized")
+                            : stage.dependencies().stream()
                             .map(dep -> "Dependency satisfied: " + dep)
                             .toList(),
-                    stage.requiresHumanApproval() && run.status() == RunStatus.REVIEW_REQUIRED
+                    state.approved()
             ));
         }
 
@@ -103,7 +109,9 @@ public class RunService {
                 run.id(),
                 run.requirement(),
                 toOrchestrationStatus(run.status()),
-                orchestrationService.buildPlanSummary(),
+                orchestrationService.buildPlanSummary() + "\n\nStage states:\n" + stageStates.stream()
+                        .map(state -> "- " + state.stageId() + ": " + state.status())
+                        .toList(),
                 traces,
                 graph,
                 metrics
@@ -116,6 +124,7 @@ public class RunService {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
                     "Only a planned run can be executed; current status is " + current.status());
         }
+        ensureExecutionGuardrails(current);
 
         List<WorkItem> completed = new ArrayList<>();
         for (WorkItem item : current.workItems()) {
@@ -142,6 +151,7 @@ public class RunService {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
                     "Run cannot be reviewed because validation did not pass");
         }
+        ensureReviewGuardrails(current, request);
 
         String feedback = request.feedback() == null ? "" : request.feedback().trim();
         RunStatus status = request.decision() == ReviewDecision.APPROVE
@@ -151,6 +161,74 @@ public class RunService {
                 current.validation(), request.decision(), feedback);
         runs.put(id, reviewed);
         return reviewed;
+    }
+
+    private void ensureExecutionGuardrails(EngineeringRun run) {
+        List<String> issues = orchestrationService.validationIssues();
+        if (!issues.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Execution is blocked because the orchestration graph is invalid: " + String.join("; ", issues));
+        }
+        if (run.requirement() == null || run.requirement().isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Requirement cannot be blank before execution");
+        }
+    }
+
+    private void ensureReviewGuardrails(EngineeringRun run, ReviewRequest request) {
+        if (request == null || request.decision() == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Review decision is required");
+        }
+        boolean requiresApproval = orchestrationService.defaultGraph().stream()
+                .anyMatch(stage -> stage.requiresHumanApproval());
+        if (requiresApproval && run.status() == RunStatus.REVIEW_REQUIRED && request.decision() == ReviewDecision.APPROVE) {
+            return;
+        }
+        if (request.decision() == ReviewDecision.REQUEST_CHANGES && run.status() == RunStatus.REVIEW_REQUIRED) {
+            return;
+        }
+        throw new ResponseStatusException(HttpStatus.CONFLICT,
+                "This run cannot be approved or changed because the review guardrails were not satisfied");
+    }
+
+    private StageExecutionState stageStateFor(EngineeringRun run, StageDefinition stage) {
+        boolean dependenciesSatisfied = stage.dependencies().stream().allMatch(this::stageDependencySatisfiedForRun);
+        boolean requiresApproval = stage.requiresHumanApproval();
+
+        if (run.status() == RunStatus.APPROVED || run.status() == RunStatus.CHANGES_REQUESTED) {
+            return new StageExecutionState(stage.id(), "COMPLETED",
+                    "Stage completed in final review state.", requiresApproval, run.reviewDecision() == ReviewDecision.APPROVE, false);
+        }
+
+        if (!dependenciesSatisfied) {
+            return new StageExecutionState(stage.id(), "BLOCKED",
+                    "Waiting on upstream dependency completion.", requiresApproval, false, true);
+        }
+
+        if (run.status() == RunStatus.REVIEW_REQUIRED) {
+            return new StageExecutionState(stage.id(), requiresApproval ? "WAITING_APPROVAL" : "COMPLETED",
+                    requiresApproval ? "Human approval required before proceeding." : "Execution completed for this stage.",
+                    requiresApproval, run.reviewDecision() == ReviewDecision.APPROVE, false);
+        }
+
+        if (run.status() == RunStatus.PLANNED) {
+            return new StageExecutionState(stage.id(), "READY",
+                    "Stage is ready to execute when the run is started.", requiresApproval, false, false);
+        }
+
+        return new StageExecutionState(stage.id(), "COMPLETED",
+                "Stage completed in the bounded execution path.", requiresApproval, false, false);
+    }
+
+    private boolean stageDependencySatisfiedForRun(String stageId) {
+        return switch (stageId) {
+            case "requirement-analysis" -> true;
+            case "decomposition" -> true;
+            case "design-review" -> true;
+            case "implementation-plan" -> true;
+            case "validation" -> true;
+            case "review-package" -> true;
+            default -> false;
+        };
     }
 
     private OrchestrationStatus toOrchestrationStatus(RunStatus runStatus) {
