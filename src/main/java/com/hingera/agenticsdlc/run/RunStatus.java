@@ -4,5 +4,6 @@ public enum RunStatus {
     PLANNED,
     REVIEW_REQUIRED,
     APPROVED,
-    CHANGES_REQUESTED
+    CHANGES_REQUESTED,
+    SAFE_STOPPED
 }

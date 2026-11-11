@@ -9,171 +9,69 @@ import java.util.Map;
 import java.util.Set;
 
 public class RunOrchestrationService {
-
     private static final List<StageDefinition> DEFAULT_GRAPH = List.of(
-            new StageDefinition(
-                    "requirement-analysis",
-                    "Requirement analysis",
-                    "Normalize the input requirement and preserve it as the source of truth.",
-                    List.of(),
-                    false,
-                    RiskLevel.LOW
-            ),
-            new StageDefinition(
-                    "decomposition",
-                    "Decomposition",
-                    "Break the requirement into engineering tasks and review gates.",
-                    List.of("requirement-analysis"),
-                    false,
-                    RiskLevel.MEDIUM
-            ),
-            new StageDefinition(
-                    "design-review",
-                    "Design review",
-                    "Assess the proposed architecture, risk, and assumptions before implementation planning.",
-                    List.of("decomposition"),
-                    true,
-                    RiskLevel.MEDIUM
-            ),
-            new StageDefinition(
-                    "implementation-plan",
-                    "Implementation plan",
-                    "Translate validated design into actionable implementation steps and verification criteria.",
-                    List.of("design-review"),
-                    false,
-                    RiskLevel.HIGH
-            ),
-            new StageDefinition(
-                    "validation",
-                    "Validation",
-                    "Check generated outputs against guardrails, acceptance criteria, and safety rules.",
-                    List.of("implementation-plan"),
-                    true,
-                    RiskLevel.HIGH
-            ),
-            new StageDefinition(
-                    "review-package",
-                    "Review package",
-                    "Assemble the final engineering summary and explicit approval checkpoint for human review.",
-                    List.of("validation"),
-                    true,
-                    RiskLevel.MEDIUM
-            )
+            new StageDefinition("requirement-analysis", "Requirement analysis", "Normalize intent, constraints, and acceptance evidence.", List.of(), false, RiskLevel.LOW),
+            new StageDefinition("codebase-analysis", "Codebase analysis", "Review supplied brownfield context and identify impacted areas; no repository scan is performed.", List.of("requirement-analysis"), false, RiskLevel.MEDIUM),
+            new StageDefinition("architecture-design", "Architecture and design", "Prepare design rationale and identify risks before implementation.", List.of("requirement-analysis", "codebase-analysis"), true, RiskLevel.HIGH),
+            new StageDefinition("implementation", "Implementation", "Produce a bounded implementation plan; this prototype does not modify source code.", List.of("architecture-design"), true, RiskLevel.HIGH),
+            new StageDefinition("testing", "Testing", "Define and validate test strategy; no target project tests are run.", List.of("implementation"), false, RiskLevel.MEDIUM),
+            new StageDefinition("documentation", "Documentation", "Prepare documentation plan and record scope limitations.", List.of("implementation"), false, RiskLevel.LOW),
+            new StageDefinition("release-readiness", "Release readiness", "Review validation evidence, unresolved risks, and human approval.", List.of("testing", "documentation"), true, RiskLevel.HIGH)
     );
 
-    public List<StageDefinition> defaultGraph() {
-        return DEFAULT_GRAPH;
-    }
+    public List<StageDefinition> defaultGraph() { return DEFAULT_GRAPH; }
 
     public List<DependencyEdge> dependencyEdges() {
-        List<DependencyEdge> edges = new ArrayList<>();
-        for (StageDefinition stage : DEFAULT_GRAPH) {
-            for (String dependency : stage.dependencies()) {
-                edges.add(new DependencyEdge(dependency, stage.id(), ExecutionGate.EXIT));
-            }
-        }
-        return edges;
+        return DEFAULT_GRAPH.stream().flatMap(stage -> stage.dependencies().stream()
+                .map(dependency -> new DependencyEdge(dependency, stage.id(), ExecutionGate.EXIT))).toList();
     }
 
     public List<String> validationIssues() {
         List<String> issues = new ArrayList<>();
-        Set<String> ids = new HashSet<>();
-
-        for (StageDefinition stage : DEFAULT_GRAPH) {
-            if (!ids.add(stage.id())) {
-                issues.add("Duplicate stage id detected: " + stage.id());
-            }
-        }
-
         Map<String, StageDefinition> index = new HashMap<>();
         for (StageDefinition stage : DEFAULT_GRAPH) {
-            index.put(stage.id(), stage);
+            if (index.put(stage.id(), stage) != null) issues.add("Duplicate stage id detected: " + stage.id());
         }
-
-        for (StageDefinition stage : DEFAULT_GRAPH) {
-            for (String dependency : stage.dependencies()) {
-                if (!index.containsKey(dependency)) {
-                    issues.add("Stage '" + stage.id() + "' depends on missing stage '" + dependency + "'.");
-                }
-            }
+        for (StageDefinition stage : DEFAULT_GRAPH) for (String dependency : stage.dependencies()) {
+            if (!index.containsKey(dependency)) issues.add("Stage '" + stage.id() + "' depends on missing stage '" + dependency + "'.");
         }
-
-        if (hasCycle()) {
-            issues.add("Orchestration graph contains a cycle and cannot execute safely.");
-        }
-
-        return issues;
+        if (hasCycle()) issues.add("Orchestration graph contains a cycle and cannot execute safely.");
+        return List.copyOf(issues);
     }
 
     public boolean hasCycle() {
         Map<String, List<String>> adjacency = new LinkedHashMap<>();
-        for (StageDefinition stage : DEFAULT_GRAPH) {
-            adjacency.put(stage.id(), stage.dependencies());
-        }
-
-        Set<String> visiting = new HashSet<>();
-        Set<String> visited = new HashSet<>();
-        for (String stageId : adjacency.keySet()) {
-            if (isCyclic(stageId, adjacency, visiting, visited)) {
-                return true;
-            }
-        }
+        for (StageDefinition stage : DEFAULT_GRAPH) adjacency.put(stage.id(), stage.dependencies());
+        Set<String> visiting = new HashSet<>(), visited = new HashSet<>();
+        for (String id : adjacency.keySet()) if (isCyclic(id, adjacency, visiting, visited)) return true;
         return false;
     }
 
-    private boolean isCyclic(String stageId, Map<String, List<String>> adjacency,
-                             Set<String> visiting, Set<String> visited) {
-        if (visiting.contains(stageId)) {
-            return true;
-        }
-        if (visited.contains(stageId)) {
-            return false;
-        }
-
-        visiting.add(stageId);
-        for (String dependency : adjacency.getOrDefault(stageId, List.of())) {
-            if (isCyclic(dependency, adjacency, visiting, visited)) {
-                return true;
-            }
-        }
-        visiting.remove(stageId);
-        visited.add(stageId);
+    private boolean isCyclic(String id, Map<String, List<String>> graph, Set<String> visiting, Set<String> visited) {
+        if (visiting.contains(id)) return true;
+        if (visited.contains(id)) return false;
+        visiting.add(id);
+        for (String dependency : graph.getOrDefault(id, List.of())) if (isCyclic(dependency, graph, visiting, visited)) return true;
+        visiting.remove(id);
+        visited.add(id);
         return false;
     }
 
     public String buildPlanSummary() {
         List<String> lines = new ArrayList<>();
-        lines.add("## Governance-aware orchestration graph");
-        lines.add("This run uses an explicit dependency-aware SDLC workflow with gated progression and human review checkpoints.");
-
+        lines.add("## SDLC dependency graph");
+        lines.add("Testing and documentation are independent branches after implementation and synchronize at release readiness.");
         for (StageDefinition stage : DEFAULT_GRAPH) {
-            String dependencyDescription = stage.dependencies().isEmpty()
-                    ? "No upstream dependency"
-                    : "Depends on: " + String.join(", ", stage.dependencies());
-            String approvalDescription = stage.requiresHumanApproval() ? "Human approval required" : "Automated stage";
-            lines.add("- " + stage.name() + " (" + stage.id() + ") — " + stage.description()
-                    + "; " + dependencyDescription + "; " + approvalDescription + "; risk=" + stage.riskLevel() + ".");
+            lines.add("- " + stage.id() + " (" + stage.riskLevel() + ") dependencies=" + stage.dependencies()
+                    + (stage.requiresHumanApproval() ? "; human approval required" : ""));
         }
-
-        lines.add("Dependency edges: " + dependencyEdges().stream()
-                .map(edge -> edge.fromStage() + " -> " + edge.toStage())
-                .sorted()
-                .toList());
-        lines.add("Control policy: execution advances only when upstream dependencies have completed and required approval gates have been satisfied.");
+        lines.add("Graph is executed in dependency order by this bounded runtime; work is not concurrently dispatched.");
         return String.join("\n", lines);
     }
 
-    public RuntimeMetrics metricsFor(int completedStages, int totalStages, int retryCount,
-                                    int rollbackCount, int approvalCheckpoints,
-                                    int criticalFailures, long latencyMs) {
-        double successRate = totalStages == 0 ? 0.0 : (completedStages * 100.0) / totalStages;
-        return new RuntimeMetrics(totalStages, completedStages, retryCount, rollbackCount,
-                approvalCheckpoints, criticalFailures, successRate, latencyMs);
-    }
-
-    public RuntimeMetrics metricsFromCompletedStages(int completedStages) {
-        int totalStages = DEFAULT_GRAPH.size();
-        long approvalCheckpoints = DEFAULT_GRAPH.stream().filter(StageDefinition::requiresHumanApproval).count();
-        return metricsFor(completedStages, totalStages, 0, 0, (int) approvalCheckpoints, 0, 0L);
+    public RuntimeMetrics metricsFor(int completed, int total, int retries, int rollbacks,
+                                     int approvals, int failures, long latencyMs) {
+        double rate = total == 0 ? 0.0 : completed * 100.0 / total;
+        return new RuntimeMetrics(total, completed, retries, rollbacks, approvals, failures, rate, latencyMs);
     }
 }

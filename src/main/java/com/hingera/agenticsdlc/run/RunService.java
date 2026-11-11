@@ -9,208 +9,222 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
 @Service
 public class RunService {
-
-    private final RunOrchestrationService orchestrationService = new RunOrchestrationService();
-
     private static final List<WorkItemDefinition> PLAN = List.of(
-            new WorkItemDefinition(WorkItemKind.REQUIREMENT_ANALYSIS, "Understand requirement",
-                    "Capture the goal and preserve the submitted requirement as the source of truth."),
-            new WorkItemDefinition(WorkItemKind.DECOMPOSITION, "Decompose into engineering steps",
-                    "Create an ordered, reviewable sequence covering design, implementation, and verification."),
-            new WorkItemDefinition(WorkItemKind.PROTOTYPE_EXECUTION, "Execute bounded prototype",
-                    "Generate a proposed engineering approach without modifying repositories or calling external systems."),
-            new WorkItemDefinition(WorkItemKind.VALIDATION, "Validate generated outcome",
-                    "Check that the run has a requirement, completed work items, and a non-empty review artifact."),
-            new WorkItemDefinition(WorkItemKind.REVIEW_PACKAGE, "Prepare human review package",
-                    "Present the work plan, execution notes, validation results, and explicit review gate.")
+            new WorkItemDefinition(WorkItemKind.REQUIREMENT_ANALYSIS, "Understand requirement", "Capture intent, constraints, ambiguity, and acceptance evidence."),
+            new WorkItemDefinition(WorkItemKind.DECOMPOSITION, "Decompose engineering work", "Create reviewable work items with sequencing and dependencies."),
+            new WorkItemDefinition(WorkItemKind.PROTOTYPE_EXECUTION, "Prepare bounded engineering approach", "Produce a proposed approach only; this prototype does not modify code or call tools."),
+            new WorkItemDefinition(WorkItemKind.VALIDATION, "Validate review package", "Check structural completeness; this is not functional or security validation."),
+            new WorkItemDefinition(WorkItemKind.REVIEW_PACKAGE, "Prepare human review package", "Present plan, assumptions, risks, validation, and human decision gate.")
     );
 
+    private final RunOrchestrationService orchestrationService = new RunOrchestrationService();
+    private final RequirementUnderstandingService understandingService = new RequirementUnderstandingService();
     private final ConcurrentMap<UUID, EngineeringRun> runs = new ConcurrentHashMap<>();
+    private final ConcurrentMap<UUID, Map<String, String>> stageStates = new ConcurrentHashMap<>();
+    private final ConcurrentMap<UUID, List<RunAuditEvent>> auditEvents = new ConcurrentHashMap<>();
+    private final ConcurrentMap<UUID, Instant> startedAt = new ConcurrentHashMap<>();
 
-    public EngineeringRun create(String rawRequirement) {
-        String requirement = rawRequirement.trim();
+    public EngineeringRun create(String rawRequirement) { return create(new CreateRunRequest(rawRequirement)); }
+
+    public EngineeringRun create(CreateRunRequest request) {
+        if (request == null || request.requirement() == null || request.requirement().isBlank())
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Requirement cannot be blank");
+        String requirement = request.requirement().trim();
+        RequirementAssessment assessment = understandingService.assess(requirement, request.scenario(), request.codebaseContext(), request.acceptanceCriteria());
         Instant now = Instant.now();
-        List<WorkItem> workItems = PLAN.stream()
-                .map(item -> new WorkItem(PLAN.indexOf(item) + 1, item.kind(), item.title(),
-                        item.description(), WorkItemStatus.PLANNED, ""))
-                .toList();
-        EngineeringRun run = new EngineeringRun(UUID.randomUUID(), requirement, RunStatus.PLANNED,
-                now, now, workItems, "", null, null, "");
+        List<WorkItem> items = new ArrayList<>();
+        for (int i = 0; i < PLAN.size(); i++) {
+            WorkItemDefinition item = PLAN.get(i);
+            items.add(new WorkItem(i + 1, item.kind(), item.title(), item.description(), WorkItemStatus.PLANNED, ""));
+        }
+        EngineeringRun run = new EngineeringRun(UUID.randomUUID(), requirement, RunStatus.PLANNED, now, now,
+                items, "", null, null, "", assessment);
         runs.put(run.id(), run);
+        Map<String, String> initialStates = new ConcurrentHashMap<>();
+        orchestrationService.defaultGraph().forEach(stage -> initialStates.put(stage.id(), "PLANNED"));
+        stageStates.put(run.id(), initialStates);
+        auditEvents.put(run.id(), new java.util.concurrent.CopyOnWriteArrayList<>());
+        record(run.id(), "RUN_CREATED", null, "requester", "Run created; assessment=" + assessment.clarity());
         return run;
     }
 
-    public List<EngineeringRun> findAll() {
-        return runs.values().stream()
-                .sorted(Comparator.comparing(EngineeringRun::createdAt))
-                .toList();
-    }
+    public List<EngineeringRun> findAll() { return runs.values().stream().sorted(Comparator.comparing(EngineeringRun::createdAt)).toList(); }
 
     public EngineeringRun findById(UUID id) {
         EngineeringRun run = runs.get(id);
-        if (run == null) {
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Run not found: " + id);
-        }
+        if (run == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Run not found: " + id);
         return run;
+    }
+
+    public List<RunAuditEvent> auditTrail(UUID id) {
+        findById(id);
+        return List.copyOf(auditEvents.getOrDefault(id, List.of()));
     }
 
     public OrchestrationSnapshot orchestrationSnapshot(UUID id) {
         EngineeringRun run = findById(id);
         List<StageDefinition> graph = orchestrationService.defaultGraph();
-        List<ExecutionTrace> traces = new ArrayList<>();
-        int completedStages = 0;
-
-        for (StageDefinition stage : graph) {
-            boolean isCompleted = run.status() != RunStatus.PLANNED &&
-                    (run.status() == RunStatus.APPROVED || run.status() == RunStatus.CHANGES_REQUESTED ||
-                            run.status() == RunStatus.REVIEW_REQUIRED ||
-                            stage.dependencies().isEmpty() || run.workItems().stream().anyMatch(item -> item.status() == WorkItemStatus.COMPLETED));
-            if (isCompleted) {
-                completedStages++;
-            }
-            traces.add(new ExecutionTrace(
-                    stage.id(),
-                    isCompleted ? "COMPLETED" : (stage.requiresHumanApproval() ? "WAITING_APPROVAL" : "PLANNED"),
-                    stage.description(),
-                    stage.dependencies().isEmpty() ? List.of("Requirement captured and normalized") : stage.dependencies().stream()
-                            .map(dep -> "Dependency satisfied: " + dep)
-                            .toList(),
-                    stage.requiresHumanApproval() && run.status() == RunStatus.REVIEW_REQUIRED
-            ));
-        }
-
-        RuntimeMetrics metrics = orchestrationService.metricsFor(
-                completedStages,
-                graph.size(),
-                0,
-                0,
+        Map<String, String> states = stageStates.getOrDefault(id, Map.of());
+        List<ExecutionTrace> traces = graph.stream().map(stage -> {
+            String state = states.getOrDefault(stage.id(), "PLANNED");
+            List<String> checks = stage.dependencies().stream().map(dep -> dep + "=" + states.getOrDefault(dep, "PLANNED")).toList();
+            boolean approved = "APPROVED".equals(state);
+            return new ExecutionTrace(stage.id(), state, stage.description(), checks, approved);
+        }).toList();
+        int completed = (int) states.values().stream().filter(state -> "COMPLETED".equals(state) || "APPROVED".equals(state)).count();
+        long latency = startedAt.containsKey(id) ? Duration.between(startedAt.get(id), run.updatedAt()).toMillis() : 0L;
+        RuntimeMetrics metrics = orchestrationService.metricsFor(completed, graph.size(), 0, 0,
                 (int) graph.stream().filter(StageDefinition::requiresHumanApproval).count(),
-                0,
-                0L
-        );
-
-        return new OrchestrationSnapshot(
-                run.id(),
-                run.requirement(),
-                toOrchestrationStatus(run.status()),
-                orchestrationService.buildPlanSummary(),
-                traces,
-                graph,
-                metrics
-        );
+                run.status() == RunStatus.SAFE_STOPPED ? 1 : 0, Math.max(latency, 0));
+        return new OrchestrationSnapshot(run.id(), run.requirement(), toOrchestrationStatus(run.status()),
+                orchestrationService.buildPlanSummary(), traces, graph, metrics);
     }
 
     public EngineeringRun execute(UUID id) {
         EngineeringRun current = findById(id);
-        if (current.status() != RunStatus.PLANNED) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT,
-                    "Only a planned run can be executed; current status is " + current.status());
+        if (current.status() != RunStatus.PLANNED)
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Only a planned run can be executed; current status is " + current.status());
+        startedAt.put(id, Instant.now());
+        List<String> graphIssues = orchestrationService.validationIssues();
+        if (!graphIssues.isEmpty()) return safeStop(current, String.join("; ", graphIssues));
+
+        Map<String, String> states = stageStates.get(id);
+        // Iterate graph nodes only when all entry dependencies have passed their exit gates.
+        for (StageDefinition stage : orchestrationService.defaultGraph()) {
+            boolean dependenciesComplete = stage.dependencies().stream().allMatch(dep ->
+                    "COMPLETED".equals(states.get(dep)) || "APPROVED".equals(states.get(dep)));
+            if (!dependenciesComplete) return safeStop(current, "Entry gate failed for stage " + stage.id());
+            states.put(stage.id(), "RUNNING");
+            record(id, "STAGE_STARTED", stage.id(), "runtime", "Entry gate passed; dependencies=" + stage.dependencies());
+            if (stage.id().equals("release-readiness")) {
+                states.put(stage.id(), "WAITING_APPROVAL");
+                record(id, "APPROVAL_REQUIRED", stage.id(), "runtime", "Release readiness requires explicit human approval.");
+                continue;
+            }
+            states.put(stage.id(), "COMPLETED");
+            record(id, "STAGE_COMPLETED", stage.id(), "runtime", "Exit gate passed.");
         }
 
-        List<WorkItem> completed = new ArrayList<>();
-        for (WorkItem item : current.workItems()) {
-            completed.add(new WorkItem(item.order(), item.kind(), item.title(), item.description(),
-                    WorkItemStatus.COMPLETED, outputFor(item.kind(), current.requirement())));
-        }
-
-        ValidationResult validation = validate(current.requirement(), completed);
-        String outcome = buildOutcome(current.requirement(), completed, validation);
-        EngineeringRun executed = new EngineeringRun(current.id(), current.requirement(),
-                RunStatus.REVIEW_REQUIRED, current.createdAt(), Instant.now(), completed,
-                outcome, validation, null, "");
+        List<WorkItem> completed = current.workItems().stream().map(item -> new WorkItem(item.order(), item.kind(),
+                item.title(), item.description(), WorkItemStatus.COMPLETED, outputFor(item.kind(), current))).toList();
+        ValidationResult validation = validate(current.requirement(), completed, current.assessment());
+        EngineeringRun executed = new EngineeringRun(current.id(), current.requirement(), RunStatus.REVIEW_REQUIRED,
+                current.createdAt(), Instant.now(), completed, buildOutcome(current, completed, validation),
+                validation, null, "", current.assessment());
         runs.put(id, executed);
         return executed;
     }
 
     public EngineeringRun review(UUID id, ReviewRequest request) {
         EngineeringRun current = findById(id);
-        if (current.status() != RunStatus.REVIEW_REQUIRED) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT,
-                    "Run must be awaiting review before a decision can be recorded");
-        }
-        if (current.validation() == null || !current.validation().passed()) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT,
-                    "Run cannot be reviewed because validation did not pass");
-        }
-
-        String feedback = request.feedback() == null ? "" : request.feedback().trim();
-        RunStatus status = request.decision() == ReviewDecision.APPROVE
-                ? RunStatus.APPROVED : RunStatus.CHANGES_REQUESTED;
-        EngineeringRun reviewed = new EngineeringRun(current.id(), current.requirement(), status,
-                current.createdAt(), Instant.now(), current.workItems(), current.outcome(),
-                current.validation(), request.decision(), feedback);
+        if (current.status() != RunStatus.REVIEW_REQUIRED)
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Run must be awaiting review before a decision can be recorded");
+        if (current.validation() == null || !current.validation().passed())
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Run cannot be reviewed because validation did not pass");
+        if (request == null || request.decision() == null)
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Review decision is required");
+        if (request.decision() == ReviewDecision.APPROVE && current.assessment().clarity() == RequirementClarity.NEEDS_CLARIFICATION)
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Resolve requirement clarification questions before approval");
+        RunStatus status = request.decision() == ReviewDecision.APPROVE ? RunStatus.APPROVED : RunStatus.CHANGES_REQUESTED;
+        Map<String, String> states = stageStates.get(id);
+        states.put("release-readiness", request.decision() == ReviewDecision.APPROVE ? "APPROVED" : "CHANGES_REQUESTED");
+        record(id, "HUMAN_REVIEW", "release-readiness", "requester", request.decision() + "; feedback=" + (request.feedback() == null ? "" : request.feedback().trim()));
+        EngineeringRun reviewed = new EngineeringRun(current.id(), current.requirement(), status, current.createdAt(),
+                Instant.now(), current.workItems(), current.outcome(), current.validation(), request.decision(),
+                request.feedback() == null ? "" : request.feedback().trim(), current.assessment());
         runs.put(id, reviewed);
         return reviewed;
     }
 
-    private OrchestrationStatus toOrchestrationStatus(RunStatus runStatus) {
-        return switch (runStatus) {
-            case PLANNED -> OrchestrationStatus.PLANNED;
-            case REVIEW_REQUIRED -> OrchestrationStatus.WAITING_APPROVAL;
-            case APPROVED -> OrchestrationStatus.APPROVED;
-            case CHANGES_REQUESTED -> OrchestrationStatus.CHANGES_REQUESTED;
-        };
+    private EngineeringRun safeStop(EngineeringRun current, String reason) {
+        stageStates.get(current.id()).replaceAll((stage, state) -> "PLANNED".equals(state) ? "BLOCKED" : state);
+        record(current.id(), "SAFE_STOP", null, "runtime", reason);
+        EngineeringRun stopped = new EngineeringRun(current.id(), current.requirement(), RunStatus.SAFE_STOPPED,
+                current.createdAt(), Instant.now(), current.workItems(), "Execution stopped safely: " + reason,
+                current.validation(), null, "", current.assessment());
+        runs.put(current.id(), stopped);
+        return stopped;
     }
 
-    private String outputFor(WorkItemKind kind, String requirement) {
+    private void record(UUID runId, String type, String stage, String actor, String detail) {
+        auditEvents.computeIfAbsent(runId, ignored -> new java.util.concurrent.CopyOnWriteArrayList<>())
+                .add(new RunAuditEvent(UUID.randomUUID(), runId, Instant.now(), type, stage, actor, detail));
+    }
+
+    private String outputFor(WorkItemKind kind, EngineeringRun run) {
         return switch (kind) {
-            case REQUIREMENT_ANALYSIS -> "Requirement captured (" + requirement.length()
-                    + " characters). No assumptions were added to the source requirement.";
-            case DECOMPOSITION -> "Five ordered workflow steps created: understand, decompose, execute, validate, and review.";
-            case PROTOTYPE_EXECUTION -> "Prototype execution is rules-based and produces this review artifact only; no code, repository, or external service was changed.";
-            case VALIDATION -> "Structural validation checks are run and their results are attached to this run.";
-            case REVIEW_PACKAGE -> "Outcome document assembled. Human review is required before this run can be approved.";
+            case REQUIREMENT_ANALYSIS -> "Scenario=" + run.assessment().scenario() + "; clarity=" + run.assessment().clarity() + "; questions=" + run.assessment().clarificationQuestions().size() + ".";
+            case DECOMPOSITION -> switch (run.assessment().scenario()) {
+                case GREENFIELD -> "Greenfield plan: design -> implementation -> tests and documentation (parallel) -> release readiness.";
+                case BROWNFIELD -> run.assessment().suppliedCodebaseContext().isBlank()
+                        ? "Brownfield selected without codebase context; impacted components remain unknown and require clarification."
+                        : "Brownfield plan scoped only to caller-supplied context: " + run.assessment().suppliedCodebaseContext();
+                case AUTO -> "Scenario classified during intake.";
+            };
+            case PROTOTYPE_EXECUTION -> "Bounded execution only. No source code, repository, or external system was changed.";
+            case VALIDATION -> "Structural/reviewability validation only; acceptance correctness, security, and compliance were not executed.";
+            case REVIEW_PACKAGE -> "Human-owned review required; no automatic approval is performed.";
         };
     }
 
-    private ValidationResult validate(String requirement, List<WorkItem> workItems) {
-        List<String> checks = new ArrayList<>();
-        List<String> issues = new ArrayList<>();
+    private ValidationResult validate(String requirement, List<WorkItem> items, RequirementAssessment assessment) {
+        List<String> checks = new ArrayList<>(), issues = new ArrayList<>();
         check(!requirement.isBlank(), "Requirement is present", checks, issues);
-        check(workItems.size() == PLAN.size(), "Expected workflow steps are present", checks, issues);
-        check(workItems.stream().allMatch(item -> item.status() == WorkItemStatus.COMPLETED),
-                "All workflow steps completed", checks, issues);
-        check(workItems.stream().allMatch(item -> !item.output().isBlank()),
-                "Every workflow step has an execution note", checks, issues);
-        check(!workItems.isEmpty(), "Review artifact has source material", checks, issues);
+        check(items.size() == PLAN.size(), "Expected workflow items are present", checks, issues);
+        check(items.stream().allMatch(item -> item.status() == WorkItemStatus.COMPLETED), "All workflow items completed", checks, issues);
+        check(items.stream().allMatch(item -> item.output() != null && !item.output().isBlank()), "Every item has an execution note", checks, issues);
+        check(assessment.clarity() == RequirementClarity.CLEAR, "Requirement is sufficiently clear for approval", checks, issues);
+        if (assessment.clarity() != RequirementClarity.CLEAR) issues.addAll(assessment.ambiguityReasons());
         return new ValidationResult(issues.isEmpty(), checks, issues);
     }
 
     private void check(boolean passed, String label, List<String> checks, List<String> issues) {
         checks.add((passed ? "PASS: " : "FAIL: ") + label);
-        if (!passed) {
-            issues.add(label);
-        }
+        if (!passed) issues.add(label);
     }
 
-    private String buildOutcome(String requirement, List<WorkItem> workItems, ValidationResult validation) {
-        StringBuilder document = new StringBuilder("# Engineering outcome\n\n")
-                .append("## Submitted requirement\n\n")
-                .append(requirement).append("\n\n")
-                .append("## Decomposed plan and execution notes\n\n");
-        for (WorkItem item : workItems) {
-            document.append(item.order()).append(". **").append(item.title()).append("** — ")
-                    .append(item.description()).append("\n\n   Status: ").append(item.status())
-                    .append(". ").append(item.output()).append("\n\n");
-        }
-        document.append("## Validation\n\n");
-        validation.checks().forEach(check -> document.append("- ").append(check).append('\n'));
-        document.append("\n## Autonomy and review boundary\n\n")
-                .append("This prototype uses deterministic local workflow steps. It does not generate or apply source-code changes, access external services, or claim that the requirement is implemented.\n\n")
-                .append("A human must inspect this outcome and explicitly approve it or request changes through the review endpoint.\n");
-        return document.toString();
+    private String buildOutcome(EngineeringRun run, List<WorkItem> items, ValidationResult validation) {
+        StringBuilder doc = new StringBuilder("# Engineering outcome\n\n## Submitted requirement\n\n")
+                .append(run.requirement()).append("\n\n## Assessment\n\nScenario: ").append(run.assessment().scenario())
+                .append("\nClarity: ").append(run.assessment().clarity()).append("\n\n## Clarification questions\n\n");
+        appendList(doc, run.assessment().clarificationQuestions());
+        doc.append("\n## Assumptions\n\n"); appendList(doc, run.assessment().assumptions());
+        doc.append("\n## Acceptance criteria\n\n"); appendList(doc, run.assessment().acceptanceCriteria());
+        doc.append("\n## Plan and outputs\n\n");
+        for (WorkItem item : items) doc.append(item.order()).append(". **").append(item.title()).append("** — ").append(item.output()).append("\n\n");
+        doc.append("## Validation\n\n"); appendList(doc, validation.checks());
+        doc.append("\n## Risks and limitations\n\n- This runtime executes a deterministic local graph model; it does not dispatch concurrent agents.\n")
+                .append("- Run and audit state are in memory and are lost on restart; audit actors are not authenticated.\n")
+                .append("- No code generation, repository inspection/mutation, CI, security/compliance scan, retry, or rollback is performed.\n")
+                .append("- Structural validation is not functional correctness; human review owns final quality.\n");
+        return doc.toString();
     }
 
-    private record WorkItemDefinition(WorkItemKind kind, String title, String description) {
+    private void appendList(StringBuilder doc, List<String> values) {
+        if (values.isEmpty()) doc.append("- None recorded.\n"); else values.forEach(value -> doc.append("- ").append(value).append('\n'));
     }
+
+    private OrchestrationStatus toOrchestrationStatus(RunStatus status) {
+        return switch (status) {
+            case PLANNED -> OrchestrationStatus.PLANNED;
+            case REVIEW_REQUIRED -> OrchestrationStatus.WAITING_APPROVAL;
+            case APPROVED -> OrchestrationStatus.APPROVED;
+            case CHANGES_REQUESTED -> OrchestrationStatus.CHANGES_REQUESTED;
+            case SAFE_STOPPED -> OrchestrationStatus.SAFE_STOPPED;
+        };
+    }
+
+    private record WorkItemDefinition(WorkItemKind kind, String title, String description) { }
 }
