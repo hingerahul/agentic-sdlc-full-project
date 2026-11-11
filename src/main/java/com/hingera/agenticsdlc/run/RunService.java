@@ -1,5 +1,10 @@
 package com.hingera.agenticsdlc.run;
 
+import com.hingera.agenticsdlc.orchestration.ExecutionTrace;
+import com.hingera.agenticsdlc.orchestration.OrchestrationStatus;
+import com.hingera.agenticsdlc.orchestration.RunOrchestrationService;
+import com.hingera.agenticsdlc.orchestration.RuntimeMetrics;
+import com.hingera.agenticsdlc.orchestration.StageDefinition;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
@@ -14,6 +19,8 @@ import java.util.concurrent.ConcurrentMap;
 
 @Service
 public class RunService {
+
+    private final RunOrchestrationService orchestrationService = new RunOrchestrationService();
 
     private static final List<WorkItemDefinition> PLAN = List.of(
             new WorkItemDefinition(WorkItemKind.REQUIREMENT_ANALYSIS, "Understand requirement",
@@ -55,6 +62,51 @@ public class RunService {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Run not found: " + id);
         }
         return run;
+    }
+
+    public OrchestrationSnapshot orchestrationSnapshot(UUID id) {
+        EngineeringRun run = findById(id);
+        List<StageDefinition> graph = orchestrationService.defaultGraph();
+        List<ExecutionTrace> traces = new ArrayList<>();
+        int completedStages = 0;
+
+        for (StageDefinition stage : graph) {
+            boolean isCompleted = run.status() != RunStatus.PLANNED &&
+                    (run.status() == RunStatus.APPROVED || run.status() == RunStatus.CHANGES_REQUESTED || run.status() == RunStatus.REVIEW_REQUIRED ||
+                            stage.dependencies().isEmpty() || run.workItems().stream().anyMatch(item -> item.status() == WorkItemStatus.COMPLETED));
+            if (isCompleted) {
+                completedStages++;
+            }
+            traces.add(new ExecutionTrace(
+                    stage.id(),
+                    isCompleted ? "COMPLETED" : (stage.requiresHumanApproval() ? "WAITING_APPROVAL" : "PLANNED"),
+                    stage.description(),
+                    stage.dependencies().isEmpty() ? List.of("Requirement captured and normalized") : stage.dependencies().stream()
+                            .map(dep -> "Dependency satisfied: " + dep)
+                            .toList(),
+                    stage.requiresHumanApproval() && run.status() == RunStatus.REVIEW_REQUIRED
+            ));
+        }
+
+        RuntimeMetrics metrics = orchestrationService.metricsFor(
+                completedStages,
+                graph.size(),
+                0,
+                0,
+                (int) graph.stream().filter(StageDefinition::requiresHumanApproval).count(),
+                0,
+                0L
+        );
+
+        return new OrchestrationSnapshot(
+                run.id(),
+                run.requirement(),
+                toOrchestrationStatus(run.status()),
+                orchestrationService.buildPlanSummary(),
+                traces,
+                graph,
+                metrics
+        );
     }
 
     public EngineeringRun execute(UUID id) {
@@ -100,6 +152,15 @@ public class RunService {
         return reviewed;
     }
 
+    private OrchestrationStatus toOrchestrationStatus(RunStatus runStatus) {
+        return switch (runStatus) {
+            case PLANNED -> OrchestrationStatus.PLANNED;
+            case REVIEW_REQUIRED -> OrchestrationStatus.WAITING_APPROVAL;
+            case APPROVED -> OrchestrationStatus.APPROVED;
+            case CHANGES_REQUESTED -> OrchestrationStatus.CHANGES_REQUESTED;
+        };
+    }
+
     private String outputFor(WorkItemKind kind, String requirement) {
         return switch (kind) {
             case REQUIREMENT_ANALYSIS -> "Requirement captured (" + requirement.length()
@@ -120,7 +181,6 @@ public class RunService {
                 "All workflow steps completed", checks, issues);
         check(workItems.stream().allMatch(item -> !item.output().isBlank()),
                 "Every workflow step has an execution note", checks, issues);
-        // The outcome is assembled from these validated, non-empty inputs.
         check(!workItems.isEmpty(), "Review artifact has source material", checks, issues);
         return new ValidationResult(issues.isEmpty(), checks, issues);
     }
@@ -145,7 +205,7 @@ public class RunService {
         document.append("## Validation\n\n");
         validation.checks().forEach(check -> document.append("- ").append(check).append('\n'));
         document.append("\n## Autonomy and review boundary\n\n")
-                .append("This prototype uses deterministic local workflow steps. It does not generate or apply source-code changes, access external services, or claim that the requirement is implemented. ")
+                .append("This prototype uses deterministic local workflow steps. It does not generate or apply source-code changes, access external services, or claim that the requirement is implemented.\n\n")
                 .append("A human must inspect this outcome and explicitly approve it or request changes through the review endpoint.\n");
         return document.toString();
     }
