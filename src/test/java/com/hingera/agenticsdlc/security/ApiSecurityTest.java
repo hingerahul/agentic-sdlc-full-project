@@ -82,6 +82,96 @@ class ApiSecurityTest {
     }
 
     @Test
+    void exercisesEveryRunEndpointWithSampleData() throws Exception {
+        mockMvc.perform(get("/api/csrf")
+                        .with(httpBasic("test-requester", "test-requester-password")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.headerName").isNotEmpty())
+                .andExpect(jsonPath("$.token").isNotEmpty());
+
+        String created = mockMvc.perform(post("/api/runs")
+                        .with(httpBasic("test-requester", "test-requester-password"))
+                        .with(csrf())
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "requirement": "Improve an existing inventory service safely.",
+                                  "scenario": "BROWNFIELD",
+                                  "codebaseContext": "inventory module; item API; stock persistence",
+                                  "acceptanceCriteria": [
+                                    "Updating an item's stock persists the new quantity"
+                                  ]
+                                }
+                                """))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.assessment.scenario").value("BROWNFIELD"))
+                .andReturn().getResponse().getContentAsString();
+        String runId = com.fasterxml.jackson.databind.json.JsonMapper.builder().build()
+                .readTree(created).get("id").asText();
+
+        mockMvc.perform(get("/api/runs")
+                        .with(httpBasic("test-requester", "test-requester-password")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[*].id").value(hasItem(runId)));
+
+        mockMvc.perform(get("/api/runs/{id}", runId)
+                        .with(httpBasic("test-requester", "test-requester-password")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(runId));
+
+        mockMvc.perform(get("/api/runs/{id}/orchestration", runId)
+                        .with(httpBasic("test-requester", "test-requester-password")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.graph.length()").value(7));
+
+        mockMvc.perform(get("/api/runs/{id}/events", runId)
+                        .with(httpBasic("test-requester", "test-requester-password")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].eventType").value("RUN_CREATED"));
+
+        mockMvc.perform(post("/api/runs/{id}/execute", runId)
+                        .with(httpBasic("test-requester", "test-requester-password"))
+                        .with(csrf()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("REVIEW_REQUIRED"));
+
+        mockMvc.perform(post("/api/runs/{id}/review", runId)
+                        .with(httpBasic("test-reviewer", "test-reviewer-password"))
+                        .with(csrf())
+                        .contentType("application/json")
+                        .content("""
+                                {"decision":"REQUEST_CHANGES","feedback":"Add inventory quantity limits."}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("CHANGES_REQUESTED"));
+
+        mockMvc.perform(post("/api/runs/{id}/replan", runId)
+                        .with(httpBasic("test-requester", "test-requester-password"))
+                        .with(csrf())
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "requirement": "Improve an existing inventory service with quantity limits.",
+                                  "scenario": "BROWNFIELD",
+                                  "codebaseContext": "inventory module; item API; stock persistence",
+                                  "acceptanceCriteria": [
+                                    "Updating an item's stock persists the new quantity",
+                                    "Stock cannot be updated below zero"
+                                  ]
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("PLANNED"))
+                .andExpect(jsonPath("$.assessment.acceptanceCriteria.length()").value(2));
+
+        mockMvc.perform(get("/api/runs/{id}/events", runId)
+                        .with(httpBasic("test-requester", "test-requester-password")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[*].eventType", hasItem("RUN_REPLANNED")))
+                .andExpect(jsonPath("$[*].actor", hasItem("test-reviewer")));
+    }
+
+    @Test
     void completesGreenfieldWorkflowThroughAuthenticatedApi() throws Exception {
         log.info("Starting greenfield API integration scenario with equipment-loan sample data");
         String created = mockMvc.perform(post("/api/runs")
