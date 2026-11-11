@@ -71,4 +71,17 @@ class RunServiceTest {
         assertEquals(RunStatus.CHANGES_REQUESTED, reviewed.status());
         assertFalse(reviewed.reviewFeedback().isBlank());
     }
+
+    @Test
+    void exposesAnOrchestrationSnapshot() {
+        EngineeringRun planned = service.create("Build a reviewable engineering outcome with orchestration metadata.");
+
+        OrchestrationSnapshot snapshot = service.orchestrationSnapshot(planned.id());
+
+        assertNotNull(snapshot);
+        assertEquals(6, snapshot.graph().size());
+        assertTrue(snapshot.summary().contains("Governance-aware orchestration graph"));
+        assertEquals(6, snapshot.traces().size());
+        assertTrue(snapshot.metrics().totalStages() > 0);
+    }
 }

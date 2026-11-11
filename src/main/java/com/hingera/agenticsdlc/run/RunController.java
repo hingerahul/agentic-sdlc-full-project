@@ -39,6 +39,11 @@ public class RunController {
         return runService.findById(id);
     }
 
+    @GetMapping("/{id}/orchestration")
+    public OrchestrationSnapshot orchestrationSnapshot(@PathVariable UUID id) {
+        return runService.orchestrationSnapshot(id);
+    }
+
     @PostMapping("/{id}/execute")
     public EngineeringRun execute(@PathVariable UUID id) {
         return runService.execute(id);
