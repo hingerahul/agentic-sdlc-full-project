@@ -16,41 +16,15 @@ import java.util.UUID;
 @RestController
 @RequestMapping("/api/runs")
 public class RunController {
-
     private final RunService runService;
+    public RunController(RunService runService) { this.runService = runService; }
 
-    public RunController(RunService runService) {
-        this.runService = runService;
-    }
-
-    @GetMapping
-    public List<EngineeringRun> findAll() {
-        return runService.findAll();
-    }
-
-    @PostMapping
-    @ResponseStatus(HttpStatus.CREATED)
-    public EngineeringRun create(@Valid @RequestBody CreateRunRequest request) {
-        return runService.create(request.requirement());
-    }
-
-    @GetMapping("/{id}")
-    public EngineeringRun findById(@PathVariable UUID id) {
-        return runService.findById(id);
-    }
-
-    @GetMapping("/{id}/orchestration")
-    public OrchestrationSnapshot orchestrationSnapshot(@PathVariable UUID id) {
-        return runService.orchestrationSnapshot(id);
-    }
-
-    @PostMapping("/{id}/execute")
-    public EngineeringRun execute(@PathVariable UUID id) {
-        return runService.execute(id);
-    }
-
-    @PostMapping("/{id}/review")
-    public EngineeringRun review(@PathVariable UUID id, @Valid @RequestBody ReviewRequest request) {
-        return runService.review(id, request);
-    }
+    @GetMapping public List<EngineeringRun> findAll() { return runService.findAll(); }
+    @PostMapping @ResponseStatus(HttpStatus.CREATED)
+    public EngineeringRun create(@Valid @RequestBody CreateRunRequest request) { return runService.create(request); }
+    @GetMapping("/{id}") public EngineeringRun findById(@PathVariable UUID id) { return runService.findById(id); }
+    @GetMapping("/{id}/orchestration") public OrchestrationSnapshot orchestrationSnapshot(@PathVariable UUID id) { return runService.orchestrationSnapshot(id); }
+    @GetMapping("/{id}/events") public List<RunAuditEvent> auditTrail(@PathVariable UUID id) { return runService.auditTrail(id); }
+    @PostMapping("/{id}/execute") public EngineeringRun execute(@PathVariable UUID id) { return runService.execute(id); }
+    @PostMapping("/{id}/review") public EngineeringRun review(@PathVariable UUID id, @Valid @RequestBody ReviewRequest request) { return runService.review(id, request); }
 }
