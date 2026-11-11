@@ -19,7 +19,7 @@ Audit appends lock the run row inside the database transaction before extending 
 
 `POST /api/runs` assesses the requirement, creates five reviewable work items, persists the run, and records `RUN_CREATED`. `POST /api/runs/{id}/execute` checks the DAG and advances ready stages in dependency waves. Each stage must pass its entry gate, local policy check, bounded worker attempts, and output exit gate. Prior stage outputs are passed to downstream workers; approval decisions remain in the audit lineage. Independent stages in a wave run concurrently.
 
-The DAG is: `requirement-analysis` -> `codebase-analysis` -> `architecture-design` -> `implementation` -> (`testing` || `documentation`) -> `release-readiness`. Architecture/design and implementation each require reviewer approval before execution; release readiness requires a final reviewer approval after structural validation. A held approval pauses advancement; a reviewer decision resumes it. `POST /api/runs/{id}/replan` invalidates stage outputs and approvals, reassesses the revised input, and keeps prior decisions in the audit history. High-risk failures and failed release validation safe-stop; non-high-risk stages may use a non-mutating fallback after two attempts.
+The DAG is: `requirement-analysis` -> `codebase-analysis` -> `architecture-design` -> `implementation` -> (`testing` || `documentation`) -> `release-readiness`. Architecture/design and implementation each require reviewer approval before execution; release readiness requires a final reviewer approval after structural validation. A held approval pauses advancement; a reviewer decision resumes it. `POST /api/runs/{id}/replan` invalidates stage outputs and approvals, reassesses the revised input, and keeps prior decisions in the audit history. If a reviewer changes a completed upstream artifact, `PATCH /api/runs/{id}/stages/{stageId}/output` records the change, invalidates dependent stages and approvals, and resumes the workflow from the changed context; revising a high-impact stage requires renewed approval before downstream work. Release-readiness output is derived and cannot be revised directly. High-risk failures and failed release validation safe-stop; non-high-risk stages may use a non-mutating fallback after two attempts.
 
 Key choices are intentionally conservative: no repository writes, network calls, arbitrary code execution, or deployment; high-impact stages require human approval; requesters cannot submit review decisions; and re-planning is explicit rather than automatically triggered. The orchestration endpoint exposes the graph, gates, waves, traces, and event-derived metrics. The events endpoint exposes the decision history.
 
@@ -41,6 +41,7 @@ All three scenarios use the same fixed DAG and review controls; scenario classif
 - The local runtime evaluates graph entry dependencies, records stage transitions, safe-stops on invalid graph/dependency gates, and requires human approval for release readiness.
 - In-memory audit event endpoint: `GET /api/runs/{id}/events`.
 - Human review endpoint: `POST /api/runs/{id}/review`.
+- Reviewer-only upstream artifact revision endpoint: `PATCH /api/runs/{id}/stages/{stageId}/output`.
 - Orchestration snapshot endpoint: `GET /api/runs/{id}/orchestration` includes graph, gates, waves, stage traces, and runtime counters.
 
 ## Important limitations
@@ -115,7 +116,7 @@ curl -fsS -u "$AGENTIC_SDLC_REQUESTER_USERNAME:$AGENTIC_SDLC_REQUESTER_PASSWORD"
 curl -fsS -u "$AGENTIC_SDLC_REQUESTER_USERNAME:$AGENTIC_SDLC_REQUESTER_PASSWORD" "$BASE/api/runs/$RUN_ID/events"
 ```
 
-For a brownfield run, supply `scenario: "BROWNFIELD"`, relevant `codebaseContext`, and measurable criteria. For ambiguity, create a run with a vague requirement or missing criteria; inspect the assessment questions, then submit clarified input to `POST /api/runs/{id}/replan` with the same CSRF/authentication requirements. Re-planning is prohibited only after final approval.
+For a brownfield run, supply `scenario: "BROWNFIELD"`, relevant `codebaseContext`, and measurable criteria. For ambiguity, create a run with a vague requirement or missing criteria; inspect the assessment questions, then submit clarified input to `POST /api/runs/{id}/replan` with the same CSRF/authentication requirements. A reviewer can revise completed stage output with `PATCH /api/runs/{id}/stages/{stageId}/output`, for example `{"output":"Updated impact analysis","rationale":"New dependency discovered"}`; downstream stages and approvals are invalidated and recomputed/re-gated from that point. Re-planning is prohibited only after final approval.
 
 Example request body for reference:
 

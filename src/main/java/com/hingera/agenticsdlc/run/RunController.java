@@ -3,6 +3,7 @@ package com.hingera.agenticsdlc.run;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -28,4 +29,9 @@ public class RunController {
     @PostMapping("/{id}/execute") public EngineeringRun execute(@PathVariable UUID id) { return runService.execute(id); }
     @PostMapping("/{id}/review") public EngineeringRun review(@PathVariable UUID id, @Valid @RequestBody ReviewRequest request) { return runService.review(id, request); }
     @PostMapping("/{id}/replan") public EngineeringRun replan(@PathVariable UUID id, @Valid @RequestBody CreateRunRequest request) { return runService.replan(id, request); }
+    @PatchMapping("/{id}/stages/{stageId}/output")
+    public EngineeringRun reviseStageOutput(@PathVariable UUID id, @PathVariable String stageId,
+                                             @Valid @RequestBody StageOutputRevision revision) {
+        return runService.reviseStageOutput(id, stageId, revision);
+    }
 }

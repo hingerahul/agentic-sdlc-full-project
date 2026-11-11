@@ -56,6 +56,7 @@ public class SecurityConfiguration {
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(authorize -> authorize
                         .requestMatchers(HttpMethod.POST, "/api/runs/*/review").hasRole("REVIEWER")
+                        .requestMatchers(HttpMethod.PATCH, "/api/runs/*/stages/*/output").hasRole("REVIEWER")
                         .anyRequest().authenticated())
                 .httpBasic(basic -> { });
         return http.build();

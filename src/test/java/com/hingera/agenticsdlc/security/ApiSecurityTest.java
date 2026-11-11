@@ -13,6 +13,7 @@ import java.util.UUID;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.httpBasic;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -95,7 +96,7 @@ class ApiSecurityTest {
                         .contentType("application/json")
                         .content("""
                                 {
-                                  "requirement": "Improve an existing inventory service safely.",
+                                  "requirement": "Update an existing inventory service safely.",
                                   "scenario": "BROWNFIELD",
                                   "codebaseContext": "inventory module; item API; stock persistence",
                                   "acceptanceCriteria": [
@@ -151,7 +152,7 @@ class ApiSecurityTest {
                         .contentType("application/json")
                         .content("""
                                 {
-                                  "requirement": "Improve an existing inventory service with quantity limits.",
+                                  "requirement": "Update an existing inventory service with quantity limits.",
                                   "scenario": "BROWNFIELD",
                                   "codebaseContext": "inventory module; item API; stock persistence",
                                   "acceptanceCriteria": [
@@ -164,10 +165,50 @@ class ApiSecurityTest {
                 .andExpect(jsonPath("$.status").value("PLANNED"))
                 .andExpect(jsonPath("$.assessment.acceptanceCriteria.length()").value(2));
 
+        mockMvc.perform(post("/api/runs/{id}/execute", runId)
+                        .with(httpBasic("test-requester", "test-requester-password"))
+                        .with(csrf()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("REVIEW_REQUIRED"));
+
+        mockMvc.perform(patch("/api/runs/{id}/stages/{stageId}/output", runId, "codebase-analysis")
+                        .with(httpBasic("test-requester", "test-requester-password"))
+                        .with(csrf())
+                        .contentType("application/json")
+                        .content("{\"output\":\"Revised inventory API and stock persistence impact analysis.\","
+                                + "\"rationale\":\"Reviewer supplied a corrected upstream dependency.\"}"))
+                .andExpect(status().isForbidden());
+
+        mockMvc.perform(patch("/api/runs/{id}/stages/{stageId}/output", runId, "codebase-analysis")
+                        .with(httpBasic("test-reviewer", "test-reviewer-password"))
+                        .with(csrf())
+                        .contentType("application/json")
+                        .content("{\"output\":\"Revised inventory API and stock persistence impact analysis.\","
+                                + "\"rationale\":\"Reviewer supplied a corrected upstream dependency.\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("REVIEW_REQUIRED"));
+
+        mockMvc.perform(post("/api/runs/{id}/review", runId)
+                        .with(httpBasic("test-reviewer", "test-reviewer-password"))
+                        .with(csrf())
+                        .contentType("application/json")
+                        .content("{\"decision\":\"APPROVE\",\"feedback\":\"Revised architecture reviewed\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("REVIEW_REQUIRED"));
+        mockMvc.perform(post("/api/runs/{id}/review", runId)
+                        .with(httpBasic("test-reviewer", "test-reviewer-password"))
+                        .with(csrf())
+                        .contentType("application/json")
+                        .content("{\"decision\":\"APPROVE\",\"feedback\":\"Revised implementation reviewed\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.outcome").value(containsString(
+                        "Revised inventory API and stock persistence impact analysis")));
+
         mockMvc.perform(get("/api/runs/{id}/events", runId)
                         .with(httpBasic("test-requester", "test-requester-password")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$[*].eventType", hasItem("RUN_REPLANNED")))
+                .andExpect(jsonPath("$[*].eventType", hasItem("UPSTREAM_OUTPUT_REVISED")))
                 .andExpect(jsonPath("$[*].actor", hasItem("test-reviewer")));
     }
 

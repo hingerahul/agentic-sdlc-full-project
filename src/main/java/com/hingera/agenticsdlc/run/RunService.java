@@ -58,6 +58,90 @@ public class RunService {
                 new GovernancePolicyEngine(), new InMemoryRunRepository(), new AuthenticatedActorProvider());
     }
 
+    @PreAuthorize("hasRole('REVIEWER')")
+    public EngineeringRun reviseStageOutput(UUID id, String stageId, StageOutputRevision revision) {
+        findById(id);
+        synchronized (runLocks.computeIfAbsent(id, ignored -> new Object())) {
+            EngineeringRun current = findById(id);
+            if (current.status() == RunStatus.APPROVED || current.status() == RunStatus.SAFE_STOPPED
+                    || current.status() == RunStatus.CHANGES_REQUESTED) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT,
+                        "Stage outputs can only be revised while a run is active or awaiting review");
+            }
+            if (revision == null || revision.output() == null || revision.output().isBlank()) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Revised stage output cannot be blank");
+            }
+            StageDefinition stage = orchestrationService.defaultGraph().stream()
+                    .filter(candidate -> candidate.id().equals(stageId)).findFirst()
+                    .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
+                            "Unknown orchestration stage: " + stageId));
+            if ("release-readiness".equals(stage.id())) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT,
+                        "Release readiness is derived from upstream evidence and cannot be revised directly");
+            }
+            Map<String, String> states = stageStates.get(id);
+            Map<String, String> outputs = stageOutputs.get(id);
+            if (!outputs.containsKey(stageId) || !isStagePassed(states.get(stageId))) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT,
+                        "Only a completed stage output can be revised");
+            }
+
+            List<String> invalidated = downstreamStages(stageId);
+            invalidated.forEach(downstream -> {
+                states.put(downstream, "PLANNED");
+                outputs.remove(downstream);
+                approvedStages.get(id).remove(downstream);
+            });
+            pendingApprovals.remove(id);
+            approvedStages.get(id).remove(stageId);
+            outputs.put(stageId, revision.output().trim());
+
+            boolean approvalRequired = stage.requiresHumanApproval();
+            if (approvalRequired) {
+                states.put(stageId, "WAITING_APPROVAL");
+                pendingApprovals.put(id, stageId);
+            } else {
+                states.put(stageId, "COMPLETED");
+            }
+            List<WorkItem> resetItems = current.workItems().stream().map(item -> new WorkItem(
+                    item.order(), item.kind(), item.title(), item.description(), WorkItemStatus.PLANNED, "")).toList();
+            EngineeringRun updated = new EngineeringRun(current.id(), current.requirement(),
+                    approvalRequired ? RunStatus.REVIEW_REQUIRED : RunStatus.PLANNED,
+                    current.createdAt(), Instant.now(), resetItems, "", null, null, "", current.assessment());
+            saveRun(updated);
+            String rationale = revision.rationale() == null || revision.rationale().isBlank()
+                    ? "No rationale supplied." : revision.rationale().trim();
+            record(id, "UPSTREAM_OUTPUT_REVISED", stageId, actorProvider.currentActor(),
+                    "Reviewer revised output; invalidated downstream stages=" + invalidated
+                            + "; rationale=" + rationale);
+            if (approvalRequired) {
+                record(id, "APPROVAL_REQUIRED", stageId, "runtime",
+                        "Revised high-impact stage output requires renewed human approval before downstream work.");
+                return updated;
+            }
+            return advance(updated);
+        }
+    }
+
+    private List<String> downstreamStages(String stageId) {
+        Map<String, StageDefinition> graph = orchestrationService.defaultGraph().stream()
+                .collect(java.util.stream.Collectors.toMap(StageDefinition::id, stage -> stage));
+        java.util.Set<String> downstream = new java.util.LinkedHashSet<>();
+        boolean changed;
+        do {
+            changed = false;
+            for (StageDefinition candidate : graph.values()) {
+                if (!candidate.id().equals(stageId) && !downstream.contains(candidate.id())
+                        && candidate.dependencies().stream()
+                        .anyMatch(dependency -> dependency.equals(stageId) || downstream.contains(dependency))) {
+                    downstream.add(candidate.id());
+                    changed = true;
+                }
+            }
+        } while (changed);
+        return List.copyOf(downstream);
+    }
+
     @Autowired
     public RunService(StageWorker stageWorker, GovernancePolicyEngine policyEngine, RunRepository runRepository,
                       AuthenticatedActorProvider actorProvider) {
@@ -273,7 +357,7 @@ public class RunService {
                 .collect(java.util.stream.Collectors.toMap(StageDefinition::id, stage -> stage));
         for (List<String> wave : orchestrationService.executionWaves()) {
             List<StageDefinition> ready = wave.stream().map(graph::get)
-                    .filter(stage -> !isStageExecuted(states.get(stage.id()))).toList();
+                    .filter(stage -> !isStageExecuted(id, stage.id(), states.get(stage.id()))).toList();
             if (ready.isEmpty()) continue;
             for (StageDefinition stage : ready) {
                 boolean dependenciesComplete = stage.dependencies().stream()
@@ -399,8 +483,9 @@ public class RunService {
         return "COMPLETED".equals(state) || "COMPLETED_WITH_FALLBACK".equals(state) || "APPROVED".equals(state);
     }
 
-    private boolean isStageExecuted(String state) {
-        return "COMPLETED".equals(state) || "COMPLETED_WITH_FALLBACK".equals(state);
+    private boolean isStageExecuted(UUID runId, String stageId, String state) {
+        return "COMPLETED".equals(state) || "COMPLETED_WITH_FALLBACK".equals(state)
+                || ("APPROVED".equals(state) && stageOutputs.get(runId).containsKey(stageId));
     }
 
     private int countEvents(List<RunAuditEvent> events, String type) {
@@ -435,7 +520,8 @@ public class RunService {
 
     private EngineeringRun safeStop(EngineeringRun current, String reason) {
         Map<String, String> states = stageStates.get(current.id());
-        List<String> rolledBack = states.entrySet().stream().filter(entry -> isStageExecuted(entry.getValue()))
+        List<String> rolledBack = states.entrySet().stream()
+                .filter(entry -> isStageExecuted(current.id(), entry.getKey(), entry.getValue()))
                 .map(Map.Entry::getKey).toList();
         states.replaceAll((stage, state) -> {
             if (rolledBack.contains(stage)) return "ROLLED_BACK";

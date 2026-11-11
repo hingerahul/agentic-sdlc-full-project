@@ -99,6 +99,31 @@ class RunServiceTest {
                 List.of("A testable outcome"))));
     }
 
+    @Test void revisedHighImpactOutputRequiresRenewedApprovalBeforeDependents() {
+        EngineeringRun planned = service.create(new CreateRunRequest(
+                "Build a workflow with measurable acceptance criteria.", ProjectScenario.GREENFIELD, "",
+                List.of("Produces a review artifact")));
+        service.execute(planned.id());
+        service.review(planned.id(), new ReviewRequest(ReviewDecision.APPROVE, "Initial architecture approved"));
+
+        EngineeringRun awaitingImplementationApproval = service.findById(planned.id());
+        assertEquals(RunStatus.REVIEW_REQUIRED, awaitingImplementationApproval.status());
+        EngineeringRun revised = service.reviseStageOutput(planned.id(), "architecture-design",
+                new StageOutputRevision("Revised architecture with an additional persistence boundary.",
+                        "A new storage dependency was identified."));
+
+        assertEquals(RunStatus.REVIEW_REQUIRED, revised.status());
+        assertEquals("WAITING_APPROVAL", service.orchestrationSnapshot(planned.id()).traces().get(2).status());
+        assertEquals("PLANNED", service.orchestrationSnapshot(planned.id()).traces().get(3).status());
+        assertTrue(service.auditTrail(planned.id()).stream()
+                .anyMatch(event -> event.eventType().equals("UPSTREAM_OUTPUT_REVISED")));
+
+        service.review(planned.id(), new ReviewRequest(ReviewDecision.APPROVE, "Revised architecture approved"));
+        assertEquals("implementation", service.auditTrail(planned.id()).stream()
+                .filter(event -> event.eventType().equals("APPROVAL_REQUIRED"))
+                .reduce((first, second) -> second).orElseThrow().stageId());
+    }
+
     @Test void executesIndependentStagesConcurrentlyAndRetriesTransientFailure() throws Exception {
         AtomicInteger activeBranches = new AtomicInteger();
         AtomicInteger peakBranches = new AtomicInteger();
