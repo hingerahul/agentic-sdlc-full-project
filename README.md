@@ -38,14 +38,8 @@ All three scenarios use the same fixed DAG and review controls; scenario classif
 - Requirement intake with optional `AUTO`, `GREENFIELD`, or `BROWNFIELD` scenario, caller-provided codebase context, and acceptance criteria.
 - Heuristic ambiguity questions and approval blocking when intake has unresolved concerns.
 - Explicit lifecycle graph: requirement analysis -> codebase-context analysis -> architecture/design -> implementation planning -> testing and documentation branches -> synchronized release readiness.
-- The runtime exposes entry/exit gates and topological execution waves. Independent local stages in a wave execute concurrently; testing and documentation synchronize at release readiness.
-- Architecture/design and implementation each pause for explicit human approval before continuing; release readiness requires a final approval after structural validation.
-- `POST /api/runs/{id}/replan` accepts a revised `CreateRunRequest`, invalidates prior stage states/approvals, restarts from requirement analysis, and preserves earlier decisions in the audit trail.
-- Stage execution has a two-attempt bound, retries transient failures once, permits non-mutating fallback for non-high-risk planning stages, and safe-stops on high-risk failure or failed release validation. Safe-stop invalidates prior local planning outputs and records rollback events; it cannot reverse external changes because external actions are disabled.
-- Policy decisions are audit events. The local policy requires human approval for high-risk stages and denies repository writes, network calls, code execution, and deployment.
-- HTTP Basic authentication protects API endpoints. Requester credentials may create and execute runs; only the separately configured reviewer account may submit approval decisions. Audit actors come from the authenticated principal.
-- The review API uses a CSRF cookie/token (`GET /api/csrf`) in addition to Basic authentication.
-- H2-backed audit event endpoint: `GET /api/runs/{id}/events`.
+- The local runtime evaluates graph entry dependencies, records stage transitions, safe-stops on invalid graph/dependency gates, and requires human approval for release readiness.
+- In-memory audit event endpoint: `GET /api/runs/{id}/events`.
 - Human review endpoint: `POST /api/runs/{id}/review`.
 - Orchestration snapshot endpoint: `GET /api/runs/{id}/orchestration` includes graph, gates, waves, stage traces, and runtime counters.
 

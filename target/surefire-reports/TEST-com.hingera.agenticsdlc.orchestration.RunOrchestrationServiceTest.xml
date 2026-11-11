@@ -23,12 +23,9 @@
     <property name="java.home" value="/usr/lib/jvm/java-21-openjdk-amd64"/>
     <property name="file.separator" value="/"/>
     <property name="basedir" value="/media/rahul/New Volume/workspace/agentic-sdlc-full-project"/>
-    <property name="style.color" value="always"/>
     <property name="java.vm.compressedOopsMode" value="32-bit"/>
     <property name="line.separator" value="&#10;"/>
-    <property name="java.vm.specification.vendor" value="Oracle Corporation"/>
     <property name="java.specification.name" value="Java Platform API Specification"/>
-    <property name="surefire.real.class.path" value="/media/rahul/New Volume/workspace/agentic-sdlc-full-project/target/surefire/surefirebooter-20261112022511550_3.jar"/>
     <property name="sun.management.compiler" value="HotSpot 64-Bit Tiered Compilers"/>
     <property name="java.runtime.version" value="21.0.13.0.3+1-1-24.04.1-Ubuntu"/>
     <property name="user.name" value="rahul"/>
