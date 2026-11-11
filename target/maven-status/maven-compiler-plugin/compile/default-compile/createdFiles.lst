@@ -37,6 +37,7 @@ com/hingera/agenticsdlc/run/RunService.class
 com/hingera/agenticsdlc/security/SecurityConfiguration.class
 com/hingera/agenticsdlc/run/StageOutputRevision.class
 com/hingera/agenticsdlc/run/ValidationResult.class
+com/hingera/agenticsdlc/OpenApiConfiguration.class
 com/hingera/agenticsdlc/AgenticSdlcApplication.class
 com/hingera/agenticsdlc/run/JdbcRunRepository$1.class
 com/hingera/agenticsdlc/run/WorkItemStatus.class

@@ -43,6 +43,7 @@ All three scenarios use the same fixed DAG and review controls; scenario classif
 - Human review endpoint: `POST /api/runs/{id}/review`.
 - Reviewer-only upstream artifact revision endpoint: `PATCH /api/runs/{id}/stages/{stageId}/output`.
 - Orchestration snapshot endpoint: `GET /api/runs/{id}/orchestration` includes graph, gates, waves, stage traces, and runtime counters.
+- Authenticated OpenAPI specification: `http://localhost:8080/v3/api-docs`; Swagger UI: `http://localhost:8080/swagger-ui/index.html`. Sign in with a configured API account. Mutating requests still require a CSRF token and reviewer credentials for review/output-revision operations.
 
 ## Important limitations
 

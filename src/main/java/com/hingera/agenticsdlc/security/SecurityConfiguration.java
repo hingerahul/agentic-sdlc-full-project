@@ -55,6 +55,7 @@ public class SecurityConfiguration {
                         .csrfTokenRequestHandler(new CsrfTokenRequestAttributeHandler()))
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(authorize -> authorize
+                        .requestMatchers("/swagger-ui.html", "/swagger-ui/**", "/v3/api-docs/**").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/runs/*/review").hasRole("REVIEWER")
                         .requestMatchers(HttpMethod.PATCH, "/api/runs/*/stages/*/output").hasRole("REVIEWER")
                         .anyRequest().authenticated())

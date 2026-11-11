@@ -41,6 +41,30 @@ class ApiSecurityTest {
     }
 
     @Test
+    void servesOpenApiWithBasicAuthAndExposesSwaggerAuthorizeFlow() throws Exception {
+        mockMvc.perform(get("/v3/api-docs"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.info.title").value("Agentic SDLC API"))
+                .andExpect(jsonPath("$.security[0].basicAuth").isArray())
+                .andExpect(jsonPath("$.components.securitySchemes.basicAuth.scheme").value("basic"));
+
+        mockMvc.perform(get("/v3/api-docs")
+                        .with(httpBasic("test-requester", "test-requester-password")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.paths['/api/runs'].get").exists())
+                .andExpect(jsonPath("$.paths['/api/runs'].post").exists())
+                .andExpect(jsonPath("$.paths['/api/runs/{id}/execute'].post").exists())
+                .andExpect(jsonPath("$.paths['/api/runs/{id}/review'].post").exists())
+                .andExpect(jsonPath("$.paths['/api/runs/{id}/stages/{stageId}/output'].patch").exists());
+
+        mockMvc.perform(get("/swagger-ui/index.html"))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(get("/api/runs"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
     void reviewerRoleIsRequiredForHumanApproval() throws Exception {
         String runId = UUID.randomUUID().toString();
         mockMvc.perform(post("/api/runs/{id}/review", runId)
