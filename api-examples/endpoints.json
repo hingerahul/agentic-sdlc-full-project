@@ -1,0 +1,74 @@
+{
+  "baseUrl": "http://localhost:8080",
+  "authentication": "HTTP Basic",
+  "csrf": "For POST and PATCH requests, send the CSRF cookie and the token/header returned by GET /api/csrf.",
+  "endpoints": [
+    {
+      "method": "GET",
+      "path": "/api/csrf",
+      "authentication": "requester or reviewer",
+      "bodyFile": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/runs",
+      "authentication": "requester or reviewer",
+      "bodyFile": null
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs",
+      "authentication": "requester",
+      "bodyFiles": [
+        "create-run-greenfield.json",
+        "create-run-brownfield.json",
+        "create-run-ambiguous.json"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/runs/{id}",
+      "authentication": "requester or reviewer",
+      "bodyFile": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/runs/{id}/orchestration",
+      "authentication": "requester or reviewer",
+      "bodyFile": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/runs/{id}/events",
+      "authentication": "requester or reviewer",
+      "bodyFile": null
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/{id}/execute",
+      "authentication": "requester",
+      "bodyFile": null
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/{id}/review",
+      "authentication": "reviewer",
+      "bodyFiles": [
+        "review-approve.json",
+        "review-request-changes.json"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/{id}/replan",
+      "authentication": "requester",
+      "bodyFile": "replan.json"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/runs/{id}/stages/{stageId}/output",
+      "authentication": "reviewer",
+      "bodyFile": "revise-stage-output.json"
+    }
+  ]
+}
