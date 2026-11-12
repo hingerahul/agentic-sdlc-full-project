@@ -36,8 +36,11 @@ class ApiSecurityTest {
 
     @Test
     void requiresAuthenticationForApiReads() throws Exception {
-        mockMvc.perform(get("/api/runs"))
-                .andExpect(status().isUnauthorized());
+        var response = mockMvc.perform(get("/api/runs"))
+                .andExpect(status().isUnauthorized())
+                .andReturn().getResponse();
+        org.junit.jupiter.api.Assertions.assertTrue(response.getHeader("WWW-Authenticate").startsWith("Basic"),
+                "Unauthenticated API requests should trigger the browser's Basic Auth prompt");
     }
 
     @Test
@@ -59,6 +62,15 @@ class ApiSecurityTest {
 
         mockMvc.perform(get("/swagger-ui/index.html"))
                 .andExpect(status().isOk());
+
+        mockMvc.perform(get("/swagger-ui/swagger-initializer.js"))
+                .andExpect(status().isOk())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.content()
+                        .string(containsString("requestInterceptor")))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.content()
+                        .string(containsString("XSRF-TOKEN")))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.content()
+                        .string(containsString("X-XSRF-TOKEN")));
 
         mockMvc.perform(get("/api/runs"))
                 .andExpect(status().isUnauthorized());

@@ -44,6 +44,7 @@ All three scenarios use the same fixed DAG and review controls; scenario classif
 - Reviewer-only upstream artifact revision endpoint: `PATCH /api/runs/{id}/stages/{stageId}/output`.
 - Orchestration snapshot endpoint: `GET /api/runs/{id}/orchestration` includes graph, gates, waves, stage traces, and runtime counters.
 - Authenticated OpenAPI specification: `http://localhost:8080/v3/api-docs`; Swagger UI: `http://localhost:8080/swagger-ui/index.html`. Sign in with a configured API account. Mutating requests still require a CSRF token and reviewer credentials for review/output-revision operations.
+- Standalone JSON request samples and an endpoint index are in `api-examples/`. GET endpoints and `POST /api/runs/{id}/execute` do not take a JSON request body. Use the `id` returned by run creation in later paths.
 
 ## Important limitations
 
@@ -66,6 +67,8 @@ set +a
 mvn test
 mvn spring-boot:run
 ```
+
+If starting from an IDE, configure the same environment variables in its run configuration; `.env` is not loaded automatically. For Swagger UI, click **Authorize** and enter the configured requester username/password. Before the first POST/PATCH, execute `GET /api/csrf` once; Swagger UI will then read the `XSRF-TOKEN` cookie and add the `X-XSRF-TOKEN` header to same-origin mutation requests. Use the reviewer account for review and stage-output revision. A `401` indicates missing or incorrect credentials; a `403` on a POST/PATCH commonly indicates a missing CSRF token, while review/revision also require the reviewer role.
 
 ### End-to-end API example
 

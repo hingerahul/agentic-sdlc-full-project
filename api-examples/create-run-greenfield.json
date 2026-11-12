@@ -1,0 +1,9 @@
+{
+  "requirement": "Add an equipment loan request feature with approval tracking.",
+  "scenario": "GREENFIELD",
+  "codebaseContext": "",
+  "acceptanceCriteria": [
+    "A requester can submit a loan request.",
+    "A reviewer can approve or reject the request."
+  ]
+}

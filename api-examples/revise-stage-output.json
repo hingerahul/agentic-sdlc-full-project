@@ -1,0 +1,4 @@
+{
+  "output": "The inventory API and stock repository both require updates.",
+  "rationale": "The reviewer identified a missing persistence dependency."
+}

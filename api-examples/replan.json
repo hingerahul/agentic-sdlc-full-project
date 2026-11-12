@@ -1,0 +1,9 @@
+{
+  "requirement": "Update the inventory service and prevent stock from going below zero.",
+  "scenario": "BROWNFIELD",
+  "codebaseContext": "Existing inventory API and stock persistence module.",
+  "acceptanceCriteria": [
+    "Stock updates persist.",
+    "Stock cannot be updated below zero."
+  ]
+}
